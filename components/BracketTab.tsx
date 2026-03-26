@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { SlateGame, SlateResponse } from "@/lib/types";
+import GameDetailDrawer from "@/components/GameDetailDrawer";
 
 // ---------------------------------------------------------------------------
 // Round and region label maps
@@ -77,18 +78,26 @@ function StatusBadge({ status }: { status: SlateGame["status"] }) {
   );
 }
 
-function GameCard({ game }: { game: SlateGame }) {
+function GameCard({
+  game,
+  onClick,
+}: {
+  game: SlateGame;
+  onClick: () => void;
+}) {
   const [away, home] = game.teams.length >= 2
     ? [game.teams[0], game.teams[1]]
     : [game.teams[0], undefined];
 
   return (
-    <div
+    <button
+      onClick={onClick}
       className={[
-        "rounded border px-4 py-3 flex flex-col gap-2",
+        "w-full text-left rounded border px-4 py-3 flex flex-col gap-2",
+        "transition-colors cursor-pointer",
         game.stale
-          ? "border-yellow-800 bg-yellow-950/30"
-          : "border-zinc-800 bg-zinc-900",
+          ? "border-yellow-800 bg-yellow-950/30 hover:border-yellow-600"
+          : "border-zinc-800 bg-zinc-900 hover:border-zinc-600",
       ].join(" ")}
     >
       {/* Header row */}
@@ -145,7 +154,7 @@ function GameCard({ game }: { game: SlateGame }) {
           {game.last_synced ? formatSyncedAt(game.last_synced) : "unknown"}
         </div>
       )}
-    </div>
+    </button>
   );
 }
 
@@ -156,9 +165,11 @@ function GameCard({ game }: { game: SlateGame }) {
 function RoundGroup({
   round,
   games,
+  onSelectGame,
 }: {
   round: number | null;
   games: SlateGame[];
+  onSelectGame: (g: SlateGame) => void;
 }) {
   // Group by sectionId within the round
   const bySection = new Map<number | null, SlateGame[]>();
@@ -185,7 +196,7 @@ function RoundGroup({
               )}
               <div className="flex flex-col gap-3">
                 {sectionGames.map((g) => (
-                  <GameCard key={g.game_id} game={g} />
+                  <GameCard key={g.game_id} game={g} onClick={() => onSelectGame(g)} />
                 ))}
               </div>
             </div>
@@ -203,6 +214,7 @@ export default function BracketTab() {
   const [slate, setSlate] = useState<SlateResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [selectedGame, setSelectedGame] = useState<SlateGame | null>(null);
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -339,10 +351,18 @@ export default function BracketTab() {
               key={String(round)}
               round={round}
               games={byRound.get(round)!}
+              onSelectGame={setSelectedGame}
             />
           ))}
         </div>
       )}
+
+      {/* Game detail drawer */}
+      <GameDetailDrawer
+        game={selectedGame}
+        isOpen={selectedGame !== null}
+        onClose={() => setSelectedGame(null)}
+      />
     </div>
   );
 }
