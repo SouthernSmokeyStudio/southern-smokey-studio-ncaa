@@ -73,18 +73,24 @@ function fmtFraction(made: number, att: number): string {
 
 // ---------------------------------------------------------------------------
 // Team-stat to team-name matching
-// team_stats_raw is keyed by numeric teamId (e.g. "2118").
-// teams[].id is seoname (e.g. "dayton") from bracket, or teamId from gameAdapter.
-// Direct key match is attempted first; positional fallback if no match.
+// team_stats_raw and player_stats_raw are now keyed by seoname (e.g. "dayton"),
+// re-keyed inside boxscoreAdapter using the top-level teams[] array that the
+// /boxscore endpoint returns. CanonicalTeam.id is also seoname in both
+// bracketAdapter and scoreboardAdapter — direct key-join is the primary path.
+// Positional fallback only fires when seoname was absent in the API response.
 // ---------------------------------------------------------------------------
 
 function resolveTeamName(
-  teamId: string,
+  statKey: string,
   index: number,
   teams: SlateGame["teams"]
 ): string {
-  const direct = teams.find((t) => t.id === teamId);
+  const direct = teams.find((t) => t.id === statKey);
   if (direct) return direct.name;
+  // Fallback: positional — only reached if seoname was missing from boxscore teams[]
+  console.warn(
+    `[GameDetailDrawer] no team matched statKey "${statKey}" — using position ${index}`
+  );
   return teams[index]?.name ?? `Team ${index + 1}`;
 }
 

@@ -105,8 +105,13 @@ function mapTeamStats(raw: Record<string, unknown>): RawTeamStats | null {
 // ---------------------------------------------------------------------------
 
 export interface BoxscoreResult {
-  player_stats_raw: Record<string, RawPlayerStats[]>; // keyed by teamId
-  team_stats_raw: Record<string, RawTeamStats>;       // keyed by teamId
+  // Both dicts are keyed by seoname (e.g. "dayton"), extracted from the
+  // top-level teams[] array that the /boxscore endpoint returns alongside
+  // teamBoxscore[]. This matches CanonicalTeam.id from bracketAdapter and
+  // scoreboardAdapter, enabling a direct key-join in the drawer.
+  // Falls back to numeric teamId string only when seoname is absent.
+  player_stats_raw: Record<string, RawPlayerStats[]>;
+  team_stats_raw: Record<string, RawTeamStats>;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,15 +146,38 @@ export async function fetchBoxscore(
     return null;
   }
 
+  // Build numericTeamId → seoname from the top-level teams[] array.
+  // Confirmed present in live API response (Step 1, game 6595954):
+  //   teams[].teamId = "2118", teams[].seoname = "dayton"
+  // This is the join key used by bracketAdapter and scoreboardAdapter.
+  const numericToSeoname = new Map<string, string>();
+  if (Array.isArray(data.teams)) {
+    for (const t of data.teams as Record<string, unknown>[]) {
+      const numericId = String(t.teamId ?? "");
+      const seoname = typeof t.seoname === "string" ? t.seoname : "";
+      if (numericId && seoname) {
+        numericToSeoname.set(numericId, seoname);
+      }
+    }
+  }
+
+  if (numericToSeoname.size === 0) {
+    console.warn(
+      `[boxscoreAdapter] could not build seoname map for game ${gameId} — stats will be keyed by numeric teamId`
+    );
+  }
+
   const player_stats_raw: Record<string, RawPlayerStats[]> = {};
   const team_stats_raw: Record<string, RawTeamStats> = {};
 
   for (const entry of teamBoxscore) {
-    const teamId = String(entry.teamId ?? "");
-    if (!teamId) {
+    const numericId = String(entry.teamId ?? "");
+    if (!numericId) {
       console.warn("[boxscoreAdapter] teamBoxscore entry missing teamId", entry);
       continue;
     }
+    // Use seoname as the canonical key; fall back to numericId only when absent.
+    const teamId = numericToSeoname.get(numericId) ?? numericId;
 
     // Team stats
     if (entry.teamStats && typeof entry.teamStats === "object") {
