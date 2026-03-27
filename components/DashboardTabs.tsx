@@ -5,8 +5,9 @@ import BracketTab from "@/components/BracketTab";
 import GameProjectionsTab from "@/components/GameProjectionsTab";
 import PlayerProjectionsTab from "@/components/PlayerProjectionsTab";
 import BettingTab from "@/components/BettingTab";
+import ValidationPanel from "@/components/ValidationPanel";
 
-type TabId = "bracket" | "game-projections" | "player-projections" | "betting";
+type TabId = "bracket" | "game-projections" | "player-projections" | "betting" | "validation";
 
 interface Tab {
   id: TabId;
@@ -18,6 +19,7 @@ const TABS: Tab[] = [
   { id: "game-projections", label: "Game Projections" },
   { id: "player-projections", label: "Player Projections" },
   { id: "betting", label: "Betting Lines" },
+  { id: "validation", label: "Validation" },
 ];
 
 interface BlockedTabProps {
@@ -70,6 +72,8 @@ export default function DashboardTabs() {
         {activeTab === "player-projections" && <PlayerProjectionsTab />}
 
         {activeTab === "betting" && <BettingTab />}
+
+        {activeTab === "validation" && <ValidationPanel />}
       </div>
     </div>
   );
