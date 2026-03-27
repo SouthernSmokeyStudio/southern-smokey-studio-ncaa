@@ -97,6 +97,50 @@ export interface CanonicalGame {
 }
 
 // ---------------------------------------------------------------------------
+// SeasonTeamStats — season-level team averages from NCAA stats endpoints.
+// Sourced from /stats/basketball-men/d1/{year}/team/{id}.
+// Used as projection inputs instead of single-game boxscore stats.
+// All percentage fields stored as decimals (e.g. 0.451, not 45.1).
+// ---------------------------------------------------------------------------
+
+export interface SeasonTeamStats {
+  // Source: endpoint 148 (Field Goal %)
+  gamesPlayed: number;
+  fieldGoalsMade: number;          // season total
+  fieldGoalsAttempted: number;     // season total — must be > 0 to compute rates
+  fieldGoalPct: number;            // decimal (FG% / 100)
+
+  // Source: endpoint 150 (Free Throw %)
+  freeThrowsMade: number;          // season total
+  freeThrowsAttempted: number;     // season total
+  freeThrowPct: number;            // decimal (FT% / 100)
+
+  // Source: endpoint 151 (Rebound Margin)
+  // OREB not directly available in NCAA stats API — rebound margin is the proxy.
+  reboundsPerGame: number;
+  oppReboundsPerGame: number;
+  reboundMargin: number;           // RPG − OPP RPG
+
+  // Source: endpoint 152 (Three Point %)
+  threesMade: number;              // season total — used in eFG% formula
+  threesAttempted: number;         // season total
+  threePointPct: number;           // decimal (3FG% / 100)
+
+  // Source: endpoint 214 (Blocks/Game)
+  blocksPerGame: number;
+
+  // Source: endpoint 215 (Steals/Game)
+  stealsPerGame: number;
+
+  // Source: endpoint 216 (Assists/Game)
+  assistsPerGame: number;
+
+  // Source: endpoint 217 (Turnovers/Game)
+  turnoversTotal: number;          // season total — used in TOV rate formula
+  turnoversPerGame: number;
+}
+
+// ---------------------------------------------------------------------------
 // SlateGame — CanonicalGame + bracket/scoreboard structural fields
 // These fields come from confirmed API output (bracketAdapter, scoreboardAdapter).
 // CanonicalGame itself remains the immutable manifesto contract.
@@ -110,6 +154,8 @@ export interface SlateGame extends CanonicalGame {
   startTimeEpoch: number | null;    // Confirmed: bracket + scoreboard game.startTimeEpoch
   network: string | null;           // Confirmed: scoreboard game.network
   broadcaster: string | null;       // Confirmed: bracket game.broadcaster.name
+  season_stats_a: SeasonTeamStats | null;  // season averages for teams[0], keyed by seoname
+  season_stats_b: SeasonTeamStats | null;  // season averages for teams[1], keyed by seoname
 }
 
 // ---------------------------------------------------------------------------

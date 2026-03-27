@@ -1,83 +1,59 @@
 // lib/projections/projectMargin.ts
-// Phase 2 — First projection target: projected margin.
+// v0.2 — Projection target: projected margin using season-level team averages.
 //
-// Accepts validated PreparedGameInputs, engineers features, and returns a
-// complete GameProjection.
+// v0.2 changes from v0.1:
+//   - Input: SlateGame (has season_stats_a/b) instead of CanonicalGame
+//   - oreb_rate_diff replaced by reb_margin_diff (proxy; OREB unavailable in NCAA stats API)
+//   - Coefficient for reb_margin_diff: 0.35 (rescaled from oreb_rate_diff's 14.0)
+//     Rationale: reb_margin_diff is in RPG units (e.g., +5.0).
+//     +10 RPG differential ≈ 3.5 pts projected impact → coefficient 0.35.
+//   - pace removed (not computable from season averages)
+//   - MODEL_VERSION bumped to v0.2-season
 //
-// Model: v0.1 — deterministic linear combination of engineered features.
-// Coefficients are theory-grounded approximations from basketball efficiency
-// literature (Dean Oliver's Four Factors framework).
-//
-// NOT empirically fitted. NOT backtested. Coefficients labeled explicitly.
-// Increment MODEL_VERSION when coefficients or feature set changes.
+// Coefficients remain theory-grounded approximations. NOT empirically fitted.
+// NOT backtested. Increment MODEL_VERSION when coefficients or feature set changes.
 //
 // Output is team_a perspective: positive projected_margin = team_a favored.
 
 import type { PreparedGameInputs, GameProjection, FeatureSet } from "@/lib/projections/types";
 import { engineerFeatures } from "@/lib/projections/engineerFeatures";
 
-const MODEL_VERSION = "v0.1-linear";
+const MODEL_VERSION = "v0.2-season";
 
 // ---------------------------------------------------------------------------
-// Coefficients — v0.1 approximations, not fitted to data.
-//
-// Units and rationale:
+// Coefficients — v0.2 approximations, not fitted to data.
 //
 //   efg_pct_diff    decimal [−1,1]  × 55.0
-//     eFG% is the single strongest predictor of offensive efficiency.
-//     A 0.01 improvement in eFG% ≈ ~0.5–0.6 pts given ~70–75 possessions/game.
-//     At 0.01 × 55 = 0.55 pts — directionally correct.
-//
 //   tov_rate_diff   decimal [−1,1]  × 25.0
-//     Each extra possession generated through opponent TOs ≈ ~1 pt expected value.
-//     tov_rate ≈ 0.14 league average; 0.01 improvement × 25 = 0.25 pts.
-//
-//   oreb_rate_diff  decimal [−1,1]  × 14.0
-//     Each second-chance possession ≈ 0.9–1.1 pts.
-//     oreb_rate ≈ 0.28 average; 0.01 improvement × 14 = 0.14 pts.
-//
+//   reb_margin_diff RPG diff        × 0.35   ← rescaled proxy for oreb_rate_diff
+//     (was oreb_rate_diff × 14.0; reb_margin is in raw RPG, different scale)
 //   ftr_diff        decimal [0,∞)   × 8.0
-//     Free throws ≈ 0.75 pts each; FTR measures both drawing fouls and
-//     converting. 0.01 FTR improvement × 8 = 0.08 pts.
-//
 //   three_pct_diff  decimal [−1,1]  × 18.0
-//     Complementary to eFG; captures perimeter efficiency signal not fully
-//     absorbed by eFG when teams have different 3PA rates.
-//
 //   ft_pct_diff     decimal [−1,1]  × 5.0
-//     Modest weight — FT% single-game variance is high.
-//
-//   ast_diff        raw count        × 0.5
-//     Assists proxy ball-movement quality; each extra assist ≈ 0.3–0.5 pts.
-//
-//   stl_diff        raw count        × 1.2
-//     Each steal ≈ 1 guaranteed extra possession + demoralisation effect.
-//
-//   blk_diff        raw count        × 0.8
-//     Blocks prevent scores but do not guarantee possession (out of bounds).
+//   ast_diff        avg per game    × 0.5
+//   stl_diff        avg per game    × 1.2
+//   blk_diff        avg per game    × 0.8
 // ---------------------------------------------------------------------------
 
-const COEFFICIENTS: Record<keyof Omit<FeatureSet, "efg_pct_a" | "efg_pct_b" | "tov_rate_a" | "tov_rate_b" | "oreb_rate_a" | "oreb_rate_b" | "ftr_a" | "ftr_b" | "pace_a" | "pace_b" | "ft_pct_diff">, number> & Record<string, number> = {
-  efg_pct_diff:   55.0,
-  tov_rate_diff:  25.0,
-  oreb_rate_diff: 14.0,
-  ftr_diff:        8.0,
-  three_pct_diff: 18.0,
-  ft_pct_diff:     5.0,
-  ast_diff:        0.5,
-  stl_diff:        1.2,
-  blk_diff:        0.8,
+const COEFFICIENTS: Record<string, number> = {
+  efg_pct_diff:    55.0,
+  tov_rate_diff:   25.0,
+  reb_margin_diff:  0.35,
+  ftr_diff:         8.0,
+  three_pct_diff:  18.0,
+  ft_pct_diff:      5.0,
+  ast_diff:         0.5,
+  stl_diff:         1.2,
+  blk_diff:         0.8,
 };
 
-// The set of features that feed the margin formula (not all FeatureSet fields).
-const FORMULA_FEATURES = Object.keys(COEFFICIENTS) as (keyof typeof COEFFICIENTS)[];
+const FORMULA_FEATURES = Object.keys(COEFFICIENTS);
 
 // ---------------------------------------------------------------------------
-// Confidence heuristic — based solely on projected margin magnitude.
-// NOT statistically calibrated. v0.1 heuristic only.
-//   high:   |margin| ≥ 10 — large statistical separation
-//   medium: |margin| ≥  5 — moderate separation
-//   low:    |margin| <  5 — close game, high uncertainty
+// Confidence heuristic — v0.2 heuristic only, not statistically calibrated.
+//   high:   |margin| ≥ 10
+//   medium: |margin| ≥  5
+//   low:    |margin| <  5
 // ---------------------------------------------------------------------------
 
 function computeConfidence(
@@ -90,30 +66,27 @@ function computeConfidence(
 }
 
 // ---------------------------------------------------------------------------
-// Main export
+// projectMargin — core engine: PreparedGameInputs → GameProjection
 // ---------------------------------------------------------------------------
 
 export function projectMargin(inputs: PreparedGameInputs): GameProjection {
   const features = engineerFeatures(inputs.team_a.stats, inputs.team_b.stats);
 
-  // Compute margin as weighted sum of formula features only.
-  // Per-team rates (efg_pct_a, tov_rate_a, etc.) and pace are in FeatureSet
-  // for inspection/debugging but are not direct formula inputs.
   let projected_margin = 0;
   for (const key of FORMULA_FEATURES) {
     const featureVal = features[key as keyof FeatureSet] as number;
     projected_margin += COEFFICIENTS[key] * featureVal;
   }
 
-  // Round to 1 decimal — false precision beyond that is misleading for v0.1.
+  // Round to 1 decimal — false precision beyond that is misleading for v0.2.
   projected_margin = Math.round(projected_margin * 10) / 10;
 
   const projected_winner: GameProjection["projected_winner"] =
     projected_margin > 0 ? "a" :
     projected_margin < 0 ? "b" :
-    null; // exact zero — genuinely indeterminate
+    null;
 
-  // Build feature_values: include per-team rates + diff values for auditability.
+  // Include all FeatureSet values in feature_values for auditability
   const feature_values: Record<string, number> = {};
   for (const key of Object.keys(features) as (keyof FeatureSet)[]) {
     feature_values[key] = features[key];
@@ -134,14 +107,14 @@ export function projectMargin(inputs: PreparedGameInputs): GameProjection {
 }
 
 // ---------------------------------------------------------------------------
-// Convenience: run the full pipeline from CanonicalGame to GameProjection.
+// projectGame — convenience wrapper: SlateGame → GameProjection
 // Returns a blocked projection when prepareGameInputs fails.
 // ---------------------------------------------------------------------------
 
 import { prepareGameInputs } from "@/lib/projections/prepareGameInputs";
-import type { CanonicalGame } from "@/lib/types";
+import type { SlateGame } from "@/lib/types";
 
-export function projectGame(game: CanonicalGame): GameProjection {
+export function projectGame(game: SlateGame): GameProjection {
   const { inputs, blocked_reason } = prepareGameInputs(game);
 
   if (!inputs || blocked_reason) {

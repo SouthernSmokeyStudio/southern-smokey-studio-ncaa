@@ -16,6 +16,7 @@
 import { fetchBracket } from "@/lib/adapters/bracketAdapter";
 import { fetchScoreboard } from "@/lib/adapters/scoreboardAdapter";
 import { fetchBoxscore } from "@/lib/adapters/boxscoreAdapter";
+import { fetchSeasonStats } from "@/lib/adapters/seasonStatsAdapter";
 import type { CanonicalTeam, SlateGame, SlateResponse } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -140,6 +141,8 @@ export async function GET(request: Request): Promise<Response> {
       startTimeEpoch: bg.startTimeEpoch,
       network: bg.broadcaster,              // bracket has broadcaster; scoreboard will overlay network
       broadcaster: bg.broadcaster,
+      season_stats_a: null,   // attached in Step 4 after season stats are fetched
+      season_stats_b: null,
     };
     gameMap.set(bg.game_id, slateGame);
   }
@@ -200,6 +203,8 @@ export async function GET(request: Request): Promise<Response> {
           startTimeEpoch: entry.startTimeEpoch,
           network: entry.network,
           broadcaster: null,
+          season_stats_a: null,
+          season_stats_b: null,
         };
         gameMap.set(entry.game.game_id, slateGame);
       }
@@ -294,17 +299,32 @@ export async function GET(request: Request): Promise<Response> {
     return results;
   }
 
-  const withStats = await fetchBoxscoreThrottled(gamesArray);
+  // Run boxscore fetches and season stats fetch concurrently — independent operations.
+  const [withStats, seasonStats] = await Promise.all([
+    fetchBoxscoreThrottled(gamesArray),
+    fetchSeasonStats(year),
+  ]);
 
   // -------------------------------------------------------------------------
-  // Step 4 — Finalize and cache
+  // Step 4 — Attach season stats to each game by seoname (teams[n].id)
+  // Fail closed: missing entry → null; projection engine will block that game.
+  // -------------------------------------------------------------------------
+
+  const withSeasonStats: SlateGame[] = withStats.map((game) => ({
+    ...game,
+    season_stats_a: game.teams[0] ? (seasonStats[game.teams[0].id] ?? null) : null,
+    season_stats_b: game.teams[1] ? (seasonStats[game.teams[1].id] ?? null) : null,
+  }));
+
+  // -------------------------------------------------------------------------
+  // Step 5 — Finalize and cache
   // -------------------------------------------------------------------------
 
   // Deduplicate sources (boxscore URLs will repeat on repeated calls)
   const uniqueSources = [...new Set(sources)];
 
   // If any game is stale, escalate status and log which games
-  const staleGames = withStats.filter((g) => g.stale);
+  const staleGames = withSeasonStats.filter((g) => g.stale);
   if (staleGames.length > 0) {
     if (overallStatus === "ok") overallStatus = "partial";
     errors.push(
@@ -319,11 +339,11 @@ export async function GET(request: Request): Promise<Response> {
     syncedAt,
     sources: uniqueSources,
     errors,
-    games: withStats,
+    games: withSeasonStats,
   };
 
   // Only cache responses that have at least some game data
-  if (withStats.length > 0) {
+  if (withSeasonStats.length > 0) {
     slateCache.set(year, { response: slateResponse, cachedAt: syncedAt });
   }
 

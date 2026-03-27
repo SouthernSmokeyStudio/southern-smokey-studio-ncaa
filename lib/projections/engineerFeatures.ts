@@ -1,21 +1,16 @@
 // lib/projections/engineerFeatures.ts
-// Phase 3 — Feature engineering layer.
+// v0.2 — Feature engineering from season-level team averages.
 //
-// Derives a FeatureSet from two validated RawTeamStats objects.
-// Every feature is documented with:
-//   - Formula
-//   - Raw fields consumed
-//   - Units
-//   - Team_a perspective (positive = team_a advantage)
+// v0.2 changes from v0.1:
+//   - Input: SeasonTeamStats (season averages) instead of RawTeamStats (single-game boxscore)
+//   - oreb_rate replaced by reb_margin proxy (OREB not available in NCAA stats API)
+//   - pace removed (Hollinger pace requires single-game play-by-play; not applicable to season avgs)
+//   - All rate features use season totals for exact computation (not per-game averages)
 //
-// No values are fabricated. Derived rates guard against division by zero
-// by returning 0.0 when the denominator is absent — this is a structural
-// edge (e.g. 0 FGA) that prepareGameInputs should have caught first.
-//
-// Feature framework: Dean Oliver's Four Factors, extended with possession
-// outcomes. All features are tournament-agnostic.
+// Feature framework: Dean Oliver Four Factors, extended with possession outcomes.
+// No values are fabricated. safeDivide guards against division by zero.
 
-import type { RawTeamStats } from "@/lib/types";
+import type { SeasonTeamStats } from "@/lib/types";
 import type { FeatureSet } from "@/lib/projections/types";
 
 // ---------------------------------------------------------------------------
@@ -30,71 +25,40 @@ function safeDivide(numerator: number, denominator: number): number {
 
 // ---------------------------------------------------------------------------
 // Effective field goal percentage
-// Formula:  (FGM + 0.5 × 3PM) / FGA
+// Formula:  (FGM + 0.5 × 3FG) / FGA  — using season totals
 // Units:    decimal [0, 1]
-// Why:      weights a made 3-pointer at 1.5× a made 2-pointer, reflecting
-//           that it produces 50% more points per make.
-// Raw:      fieldGoalsMade, threePointsMade, fieldGoalsAttempted
+// Why:      weights a made 3-pointer at 1.5× a 2-pointer.
 // ---------------------------------------------------------------------------
 
-function computeEfgPct(s: RawTeamStats): number {
-  return safeDivide(s.fieldGoalsMade + 0.5 * s.threePointsMade, s.fieldGoalsAttempted);
+function computeEfgPct(s: SeasonTeamStats): number {
+  return safeDivide(
+    s.fieldGoalsMade + 0.5 * s.threesMade,
+    s.fieldGoalsAttempted
+  );
 }
 
 // ---------------------------------------------------------------------------
 // Turnover rate
-// Formula:  TOV / (FGA + 0.44 × FTA + TOV)
-// Units:    decimal [0, 1] — fraction of possessions ending in a turnover
-// Why:      0.44 is the standard coefficient converting FTA to possession
-//           estimates (accounts for and-ones, technical FTs, etc.).
-// Raw:      turnovers, fieldGoalsAttempted, freeThrowsAttempted
+// Formula:  TO / (FGA + 0.44 × FTA + TO)  — using season totals
+// Units:    decimal [0, 1]
+// Why:      0.44 converts FTA to possession estimates (and-ones, technical FTs).
 // ---------------------------------------------------------------------------
 
-function computeTovRate(s: RawTeamStats): number {
-  const denom = s.fieldGoalsAttempted + 0.44 * s.freeThrowsAttempted + s.turnovers;
-  return safeDivide(s.turnovers, denom);
-}
-
-// ---------------------------------------------------------------------------
-// Offensive rebounding rate
-// Formula:  OREB / (OREB + opp_DREB)
-//           where opp_DREB = opponent.totalRebounds − opponent.offensiveRebounds
-// Units:    decimal [0, 1] — fraction of available offensive boards captured
-// Why:      measures second-chance opportunity creation relative to what was
-//           available, not the absolute count.
-// Raw:      offensiveRebounds (team), totalRebounds and offensiveRebounds (opp)
-// ---------------------------------------------------------------------------
-
-function computeOrebRate(team: RawTeamStats, opponent: RawTeamStats): number {
-  const oppDreb = opponent.totalRebounds - opponent.offensiveRebounds;
-  return safeDivide(team.offensiveRebounds, team.offensiveRebounds + oppDreb);
+function computeTovRate(s: SeasonTeamStats): number {
+  const denom =
+    s.fieldGoalsAttempted + 0.44 * s.freeThrowsAttempted + s.turnoversTotal;
+  return safeDivide(s.turnoversTotal, denom);
 }
 
 // ---------------------------------------------------------------------------
 // Free throw rate
-// Formula:  FTM / FGA
-// Units:    decimal [0, +∞) — typically 0.10 to 0.45 in practice
-// Why:      measures ability to get to the line and convert; using FTM (not
-//           FTA) captures both drawing fouls AND converting them.
-// Raw:      freeThrowsMade, fieldGoalsAttempted
+// Formula:  FTM / FGA  — using season totals
+// Units:    decimal [0, +∞)
+// Why:      measures ability to get to the line AND convert.
 // ---------------------------------------------------------------------------
 
-function computeFtr(s: RawTeamStats): number {
+function computeFtr(s: SeasonTeamStats): number {
   return safeDivide(s.freeThrowsMade, s.fieldGoalsAttempted);
-}
-
-// ---------------------------------------------------------------------------
-// Pace proxy (Hollinger single-game estimate)
-// Formula:  FGA − OREB + TOV + 0.44 × FTA
-// Units:    estimated possessions (raw count)
-// Why:      approximates number of possessions without play-by-play data.
-//           Not season-adjusted — meaningful only relative to the opponent
-//           in the same game.
-// Raw:      fieldGoalsAttempted, offensiveRebounds, turnovers, freeThrowsAttempted
-// ---------------------------------------------------------------------------
-
-function computePace(s: RawTeamStats): number {
-  return s.fieldGoalsAttempted - s.offensiveRebounds + s.turnovers + 0.44 * s.freeThrowsAttempted;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,33 +66,27 @@ function computePace(s: RawTeamStats): number {
 // ---------------------------------------------------------------------------
 
 export function engineerFeatures(
-  statsA: RawTeamStats,
-  statsB: RawTeamStats
+  statsA: SeasonTeamStats,
+  statsB: SeasonTeamStats
 ): FeatureSet {
-  // Compute per-team rates
+  // Four Factors
   const efg_pct_a = computeEfgPct(statsA);
   const efg_pct_b = computeEfgPct(statsB);
 
   const tov_rate_a = computeTovRate(statsA);
   const tov_rate_b = computeTovRate(statsB);
 
-  const oreb_rate_a = computeOrebRate(statsA, statsB);
-  const oreb_rate_b = computeOrebRate(statsB, statsA);
-
   const ftr_a = computeFtr(statsA);
   const ftr_b = computeFtr(statsB);
 
-  const pace_a = computePace(statsA);
-  const pace_b = computePace(statsB);
+  // Rebound margin proxy (replaces oreb_rate — OREB not in NCAA stats API)
+  // reboundMargin = RPG − OPP RPG, already computed in the adapter from endpoint 151.
+  const reb_margin_a = statsA.reboundMargin;
+  const reb_margin_b = statsB.reboundMargin;
 
-  // threePointPercentage and freeThrowPercentage are stored as 0–100 floats
-  // in RawTeamStats (e.g. 37.5 means 37.5%). Convert to decimal for consistent
-  // units before computing diff.
-  const three_pct_diff =
-    safeDivide(statsA.threePointPercentage - statsB.threePointPercentage, 100);
-
-  const ft_pct_diff =
-    safeDivide(statsA.freeThrowPercentage - statsB.freeThrowPercentage, 100);
+  // 3PT% and FT% are stored as decimals in SeasonTeamStats (adapter divides by 100)
+  const three_pct_diff = statsA.threePointPct - statsB.threePointPct;
+  const ft_pct_diff    = statsA.freeThrowPct  - statsB.freeThrowPct;
 
   return {
     // Four Factors
@@ -138,11 +96,11 @@ export function engineerFeatures(
 
     tov_rate_a,
     tov_rate_b,
-    tov_rate_diff: tov_rate_b - tov_rate_a,   // inverted: positive = A advantage
+    tov_rate_diff: tov_rate_b - tov_rate_a,  // inverted: positive = A advantage (B turns it over more)
 
-    oreb_rate_a,
-    oreb_rate_b,
-    oreb_rate_diff: oreb_rate_a - oreb_rate_b,
+    reb_margin_a,
+    reb_margin_b,
+    reb_margin_diff: reb_margin_a - reb_margin_b,
 
     ftr_a,
     ftr_b,
@@ -152,13 +110,9 @@ export function engineerFeatures(
     three_pct_diff,
     ft_pct_diff,
 
-    // Possession outcomes (raw count differentials)
-    ast_diff: statsA.assists - statsB.assists,
-    stl_diff: statsA.steals - statsB.steals,
-    blk_diff: statsA.blockedShots - statsB.blockedShots,
-
-    // Pace
-    pace_a,
-    pace_b,
+    // Possession outcomes (per-game season averages)
+    ast_diff: statsA.assistsPerGame - statsB.assistsPerGame,
+    stl_diff: statsA.stealsPerGame  - statsB.stealsPerGame,
+    blk_diff: statsA.blocksPerGame  - statsB.blocksPerGame,
   };
 }
