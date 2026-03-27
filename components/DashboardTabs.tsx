@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import BracketTab from "@/components/BracketTab";
+import GameProjectionsTab from "@/components/GameProjectionsTab";
 
 type TabId = "bracket" | "game-projections" | "player-projections" | "betting";
 
@@ -62,9 +63,7 @@ export default function DashboardTabs() {
       <div className="flex flex-col flex-1 min-h-0 overflow-auto px-4 py-4">
         {activeTab === "bracket" && <BracketTab />}
 
-        {activeTab === "game-projections" && (
-          <BlockedTab message="Game projection engine not yet built. Requires team_stats_raw from completed games and derived features." />
-        )}
+        {activeTab === "game-projections" && <GameProjectionsTab />}
 
         {activeTab === "player-projections" && (
           <BlockedTab message="Downstream of Game Projections. Cannot build until Game Projections are validated." />
