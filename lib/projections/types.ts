@@ -72,6 +72,46 @@ export interface FeatureSet {
 }
 
 // ---------------------------------------------------------------------------
+// PlayerProjection — projected output for one player in one game (v0.1)
+// Baseline: player's most recent completed tournament game boxscore.
+// Adjustments: minutes scaler based on projected game margin (garbage time).
+// ---------------------------------------------------------------------------
+
+export interface PlayerProjection {
+  player_id: string;
+  player_name: string;
+  position: string;
+  team_id: string;
+  game_id: string;
+  projection_status: "projected" | "blocked";
+  projected_minutes: number | null;
+  projected_points: number | null;
+  projected_rebounds: number | null;
+  projected_assists: number | null;
+  projected_turnovers: number | null;
+  projected_steals: number | null;
+  projected_blocks: number | null;
+  projected_dk_points: number | null;  // DraftKings fantasy scoring
+  blocked_reason: string | null;
+  model_version: string;
+  generated_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// TeamPlayerProjections — all projected players for one team in one game
+// ---------------------------------------------------------------------------
+
+export interface TeamPlayerProjections {
+  game_id: string;
+  team_id: string;
+  team_name: string;
+  game_projection: GameProjection;
+  players: PlayerProjection[];
+  projection_status: "projected" | "blocked";
+  blocked_reason: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // GameProjection — output of the full projection pipeline
 // ---------------------------------------------------------------------------
 

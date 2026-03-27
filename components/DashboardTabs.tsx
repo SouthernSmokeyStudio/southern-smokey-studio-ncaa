@@ -3,6 +3,8 @@
 import { useState } from "react";
 import BracketTab from "@/components/BracketTab";
 import GameProjectionsTab from "@/components/GameProjectionsTab";
+import PlayerProjectionsTab from "@/components/PlayerProjectionsTab";
+import BettingTab from "@/components/BettingTab";
 
 type TabId = "bracket" | "game-projections" | "player-projections" | "betting";
 
@@ -65,13 +67,9 @@ export default function DashboardTabs() {
 
         {activeTab === "game-projections" && <GameProjectionsTab />}
 
-        {activeTab === "player-projections" && (
-          <BlockedTab message="Downstream of Game Projections. Cannot build until Game Projections are validated." />
-        )}
+        {activeTab === "player-projections" && <PlayerProjectionsTab />}
 
-        {activeTab === "betting" && (
-          <BlockedTab message="Downstream of Game and Player Projections. Cannot build until upstream layers are validated." />
-        )}
+        {activeTab === "betting" && <BettingTab />}
       </div>
     </div>
   );
