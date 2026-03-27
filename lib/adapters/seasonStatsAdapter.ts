@@ -70,6 +70,34 @@ function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Normalize a stats endpoint display name to seoname format.
+ * Used as a fallback when the schools-index lookup fails.
+ *
+ * Rules:
+ *   lowercase → remove periods → remove apostrophes → remove parens → spaces→hyphens
+ *
+ * Examples:
+ *   "Duke"          → "duke"
+ *   "Michigan St."  → "michigan-st"
+ *   "Florida"       → "florida"
+ *   "St. Mary's (CA)" → "st-marys-ca"
+ *   "Loyola (Ill.)" → "loyola-ill"
+ *
+ * NOTE: overrides in STATS_NAME_OVERRIDES take priority and will never reach this.
+ * Schools-index lookup takes secondary priority. This function is the last resort.
+ */
+function normalizeDisplayName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\./g, "")         // "St." → "st", "Ill." → "ill"
+    .replace(/[''']/g, "")      // apostrophes: "St. Mary's" → "st marys"
+    .replace(/[()]/g, "")       // parens: "Cal (Davis)" → "cal davis"
+    .replace(/\s+/g, "-")       // spaces → hyphens
+    .replace(/-+/g, "-")        // collapse consecutive hyphens
+    .replace(/^-|-$/g, "");     // trim leading/trailing hyphens
+}
+
 /** Fetch all pages of a single stat endpoint. Returns flat array of row objects. */
 async function fetchAllPages(
   endpointId: number,
@@ -167,17 +195,35 @@ export async function fetchSeasonStats(
     await delay(400);
   }
 
-  // Index each endpoint's rows by seoname
+  // Index each endpoint's rows by seoname.
+  // Resolution order:
+  //   1. STATS_NAME_OVERRIDES (highest priority — known display-name mismatches)
+  //   2. /schools-index name → slug lookup
+  //   3. normalizeDisplayName() fallback — lowercase + periods/spaces normalized
+  // Every team gets a key; resolution mismatches surface as null stats at lookup time.
   const byId: Record<number, Map<string, Record<string, string>>> = {};
+  let normalizedFallbackCount = 0;
   for (const id of STAT_ENDPOINT_IDS) {
     byId[id] = new Map();
     for (const row of rowsByEndpoint[id]) {
       const teamName = row["Team"];
       if (!teamName) continue;
-      const seoname = nameToSeoname.get(teamName);
-      if (!seoname) continue; // unresolved — skip silently (363 teams, many irrelevant)
+      const fromIndex = nameToSeoname.get(teamName);
+      let seoname: string;
+      if (fromIndex) {
+        seoname = fromIndex;
+      } else {
+        seoname = normalizeDisplayName(teamName);
+        if (id === STAT_ENDPOINT_IDS[0]) normalizedFallbackCount++;
+      }
       byId[id].set(seoname, row);
     }
+  }
+  if (normalizedFallbackCount > 0) {
+    console.warn(
+      `[seasonStatsAdapter] ${normalizedFallbackCount} teams not in schools-index — ` +
+      `seonames derived via normalizeDisplayName(). Check overrides if any games remain blocked.`
+    );
   }
 
   // Merge into SeasonTeamStats — primary index is endpoint 148 (FG%)
@@ -194,20 +240,25 @@ export async function fetchSeasonStats(
     const ast = byId[216].get(seoname);
     const tov = byId[217].get(seoname);
 
-    // Fail closed: all 9 endpoints required for a complete SeasonTeamStats
-    if (!scr || !fg || !ft || !reb || !thr || !blk || !stl || !ast || !tov) {
-      console.warn(`[seasonStatsAdapter] ${seoname}: missing data from ≥1 endpoint — excluded`);
+    // Fail closed: the 8 core stat endpoints (148/150/151/152/214/215/216/217) are required.
+    // Endpoint 145 (PPG) is non-blocking — if missing or zero, pointsPerGame defaults to 0.
+    if (!fg || !ft || !reb || !thr || !blk || !stl || !ast || !tov) {
+      console.warn(`[seasonStatsAdapter] ${seoname}: missing data from ≥1 core endpoint — excluded`);
       continue;
     }
 
-    // Endpoint 145 (Scoring Offense) field name inferred as "PPG" from API naming patterns.
-    // If zero for all teams, the field name is wrong — check console output and update here.
-    const rawPpg = parseNum(scr["PPG"]);
-    if (rawPpg === 0) {
-      console.warn(
-        `[seasonStatsAdapter] ${seoname}: endpoint 145 PPG=0 — ` +
-        `field name may be incorrect. Available keys: ${Object.keys(scr).join(", ")}`
-      );
+    // Endpoint 145 (Scoring Offense): field name inferred as "PPG" from API naming patterns.
+    // Non-blocking: if scr is missing or PPG=0, log and default to 0.
+    // The PPG=0 warn also fires when the field name is wrong — check Available keys.
+    let rawPpg = 0;
+    if (scr) {
+      rawPpg = parseNum(scr["PPG"]);
+      if (rawPpg === 0) {
+        console.warn(
+          `[seasonStatsAdapter] ${seoname}: endpoint 145 PPG=0 — ` +
+          `field name may be incorrect. Available keys: ${Object.keys(scr).join(", ")}`
+        );
+      }
     }
 
     stats[seoname] = {
@@ -240,8 +291,10 @@ export async function fetchSeasonStats(
   }
 
   cache.set(year, { stats, fetchedAt: Date.now() });
+  const keys = Object.keys(stats);
   console.log(
-    `[seasonStatsAdapter] cached season stats for ${Object.keys(stats).length} teams (year=${year})`
+    `[seasonStatsAdapter] cached season stats for ${keys.length} teams (year=${year}). ` +
+    `Sample keys: ${keys.slice(0, 10).join(", ")}`
   );
   return stats;
 }
