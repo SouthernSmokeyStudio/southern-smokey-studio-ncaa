@@ -335,8 +335,9 @@ export default function PlayerProjectionsTab() {
 
           {/* Disclaimer */}
           <p className="mt-8 text-[10px] font-mono text-zinc-700 border-t border-zinc-800 pt-4">
-            Player projections are v0.1 — single-game baseline from most recent tournament game.
-            High variance. Not backtested. Minutes scaler applied to projected winners in blowouts.
+            Player projections are v0.2 — averaged across all completed tournament games per player.
+            Reduces single-game variance vs v0.1. Still high variance. Not backtested.
+            Minutes scaler applied to projected winners in blowouts.
             Do not treat as validated. DK scoring includes double/triple-double bonuses on projected stats.
           </p>
         </div>

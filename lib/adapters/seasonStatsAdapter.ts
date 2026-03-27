@@ -2,6 +2,7 @@
 // Fetches season-level team stats from the henrygd NCAA stats endpoints.
 //
 // Endpoints (basketball-men/d1/{year}/team/{id}):
+//   145 — Scoring Offense → PPG  (field name inferred from API naming patterns; verified via console.warn)
 //   148 — Field Goal %    → FGM, FGA, FG%
 //   150 — Free Throw %    → FT, FTA, FT%
 //   151 — Rebound Margin  → RPG, OPP RPG, REB MAR
@@ -38,7 +39,7 @@ const STATS_NAME_OVERRIDES: Record<string, string> = {
 // Stat endpoint IDs
 // ---------------------------------------------------------------------------
 
-const STAT_ENDPOINT_IDS = [148, 150, 151, 152, 214, 215, 216, 217] as const;
+const STAT_ENDPOINT_IDS = [145, 148, 150, 151, 152, 214, 215, 216, 217] as const;
 
 // ---------------------------------------------------------------------------
 // Module-level cache
@@ -183,6 +184,7 @@ export async function fetchSeasonStats(
   const stats: Record<string, SeasonTeamStats> = {};
 
   for (const seoname of byId[148].keys()) {
+    const scr = byId[145].get(seoname);
     const fg  = byId[148].get(seoname);
     const ft  = byId[150].get(seoname);
     const reb = byId[151].get(seoname);
@@ -192,10 +194,20 @@ export async function fetchSeasonStats(
     const ast = byId[216].get(seoname);
     const tov = byId[217].get(seoname);
 
-    // Fail closed: all 8 endpoints required for a complete SeasonTeamStats
-    if (!fg || !ft || !reb || !thr || !blk || !stl || !ast || !tov) {
+    // Fail closed: all 9 endpoints required for a complete SeasonTeamStats
+    if (!scr || !fg || !ft || !reb || !thr || !blk || !stl || !ast || !tov) {
       console.warn(`[seasonStatsAdapter] ${seoname}: missing data from ≥1 endpoint — excluded`);
       continue;
+    }
+
+    // Endpoint 145 (Scoring Offense) field name inferred as "PPG" from API naming patterns.
+    // If zero for all teams, the field name is wrong — check console output and update here.
+    const rawPpg = parseNum(scr["PPG"]);
+    if (rawPpg === 0) {
+      console.warn(
+        `[seasonStatsAdapter] ${seoname}: endpoint 145 PPG=0 — ` +
+        `field name may be incorrect. Available keys: ${Object.keys(scr).join(", ")}`
+      );
     }
 
     stats[seoname] = {
@@ -222,6 +234,8 @@ export async function fetchSeasonStats(
 
       turnoversTotal:        parseNum(tov["TO"]),
       turnoversPerGame:      parseNum(tov["TOPG"]),
+
+      pointsPerGame:         rawPpg,
     };
   }
 

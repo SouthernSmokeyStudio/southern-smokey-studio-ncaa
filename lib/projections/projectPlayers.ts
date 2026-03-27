@@ -1,16 +1,24 @@
 // lib/projections/projectPlayers.ts
-// v0.1 — Player projection engine.
+// v0.2 — Player projection engine.
+//
+// v0.2 changes from v0.1:
+//   - Baseline is now the AVERAGE across all completed tournament games for each
+//     player, not just the most recent game. This reduces single-game variance.
+//     A player who scored 30 in Round 1 but averages 15 will be projected at ~15,
+//     not 30, once Round 2 data is available.
+//   - Players are averaged by player_id across all games where they appeared.
+//   - Games where a player didn't appear (minutesPlayed < MIN_MINUTES_THRESHOLD)
+//     are still excluded per-game before averaging.
 //
 // Inputs:
 //   - SlateGame (the scheduled game being projected)
 //   - GameProjection (must be 'projected', not 'blocked')
 //   - allGames: SlateGame[] (full slate — used to find player baselines from
-//     prior completed tournament games for the same team)
+//     all completed tournament games for the same team)
 //
 // Method:
-//   1. Find the most recent completed tournament game for the team that has
-//      player_stats_raw populated (prior round boxscore).
-//   2. Use each player's stat line from that game as the baseline.
+//   1. Find all completed tournament games for the team that have player_stats_raw.
+//   2. Average each player's stat line across all their appearances.
 //   3. Apply a minutes scaler: projected winners in blowouts get garbage-time
 //      reduction; projected losers play full minutes.
 //   4. Scale all counting stats proportionally to projected minutes.
@@ -19,10 +27,7 @@
 // Fail-closed:
 //   - No completed baseline game found → team blocked
 //   - GameProjection is blocked → team blocked
-//   - Player played < 5 minutes in baseline → excluded (DNP / garbage time)
-//
-// NOT backtested. Single-game sample baseline is high-variance.
-// DK double-double and triple-double bonuses are approximated from projected stats.
+//   - Player averaged < 5 minutes across appearances → excluded
 
 import type { SlateGame, RawPlayerStats } from "@/lib/types";
 import type {
@@ -31,8 +36,8 @@ import type {
   TeamPlayerProjections,
 } from "@/lib/projections/types";
 
-const PLAYER_MODEL_VERSION = "v0.1-boxscore";
-const MIN_MINUTES_THRESHOLD = 5; // exclude players with fewer than this many minutes
+const PLAYER_MODEL_VERSION = "v0.2-boxscore";
+const MIN_MINUTES_THRESHOLD = 5; // exclude players averaging fewer minutes than this
 
 // ---------------------------------------------------------------------------
 // DraftKings scoring
@@ -85,28 +90,79 @@ function getMinutesScaler(
 }
 
 // ---------------------------------------------------------------------------
-// Find the most recent completed tournament game with player stats for a team
+// Aggregate player baselines across all completed tournament games
+// Returns averaged RawPlayerStats[] or null if no completed game exists
 // ---------------------------------------------------------------------------
 
-function findPlayerBaseline(
+function aggregatePlayerBaselines(
   teamSeoname: string,
   allGames: SlateGame[]
 ): RawPlayerStats[] | null {
-  const completed = allGames.filter(
+  const completedGames = allGames.filter(
     (g) =>
       g.status === "final" &&
       Array.isArray(g.player_stats_raw[teamSeoname]) &&
       g.player_stats_raw[teamSeoname].length > 0
   );
 
-  if (completed.length === 0) return null;
+  if (completedGames.length === 0) return null;
 
-  // Most recent = highest startTimeEpoch; fallback to last in array
-  const sorted = [...completed].sort(
-    (a, b) => (b.startTimeEpoch ?? 0) - (a.startTimeEpoch ?? 0)
-  );
+  // Group appearances by player_id across all completed games
+  const playerMap = new Map<number, RawPlayerStats[]>();
 
-  return sorted[0].player_stats_raw[teamSeoname];
+  for (const game of completedGames) {
+    for (const stats of game.player_stats_raw[teamSeoname]) {
+      // Exclude DNPs and garbage-only appearances before averaging
+      if (stats.minutesPlayed < MIN_MINUTES_THRESHOLD) continue;
+      const existing = playerMap.get(stats.id) ?? [];
+      existing.push(stats);
+      playerMap.set(stats.id, existing);
+    }
+  }
+
+  if (playerMap.size === 0) return null;
+
+  // Average each player's stats across their appearances
+  const averaged: RawPlayerStats[] = [];
+
+  for (const [, appearances] of playerMap) {
+    const n = appearances.length;
+    const base = appearances[0]; // use first appearance for non-numeric identity fields
+
+    const avgNum = (selector: (s: RawPlayerStats) => number): number =>
+      appearances.reduce((acc, s) => acc + selector(s), 0) / n;
+
+    averaged.push({
+      // Identity fields — use most recent appearance (last in array = most recent or first seen)
+      id:                    base.id,
+      number:                base.number,
+      firstName:             base.firstName,
+      lastName:              base.lastName,
+      position:              base.position,
+      year:                  base.year,
+      elig:                  base.elig,
+      starter:               base.starter,
+
+      // Averaged counting stats
+      minutesPlayed:         avgNum((s) => s.minutesPlayed),
+      fieldGoalsMade:        avgNum((s) => s.fieldGoalsMade),
+      fieldGoalsAttempted:   avgNum((s) => s.fieldGoalsAttempted),
+      freeThrowsMade:        avgNum((s) => s.freeThrowsMade),
+      freeThrowsAttempted:   avgNum((s) => s.freeThrowsAttempted),
+      threePointsMade:       avgNum((s) => s.threePointsMade),
+      threePointsAttempted:  avgNum((s) => s.threePointsAttempted),
+      offensiveRebounds:     avgNum((s) => s.offensiveRebounds),
+      totalRebounds:         avgNum((s) => s.totalRebounds),
+      assists:               avgNum((s) => s.assists),
+      turnovers:             avgNum((s) => s.turnovers),
+      personalFouls:         avgNum((s) => s.personalFouls),
+      steals:                avgNum((s) => s.steals),
+      blockedShots:          avgNum((s) => s.blockedShots),
+      points:                avgNum((s) => s.points),
+    });
+  }
+
+  return averaged.length > 0 ? averaged : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,8 +206,8 @@ function projectTeamPlayers(
     );
   }
 
-  // Gate 2: find a completed game with player stats for this team
-  const baseline = findPlayerBaseline(teamRef.id, allGames);
+  // Gate 2: find averaged baseline across all completed games for this team
+  const baseline = aggregatePlayerBaselines(teamRef.id, allGames);
   if (!baseline) {
     return blocked(
       `no completed tournament game with player stats found for "${teamRef.id}" — ` +
@@ -169,50 +225,48 @@ function projectTeamPlayers(
 
   const generatedAt = new Date().toISOString();
 
-  const players: PlayerProjection[] = baseline
-    .filter((p) => p.minutesPlayed >= MIN_MINUTES_THRESHOLD)
-    .map((p): PlayerProjection => {
-      const projMinutes = Math.round(p.minutesPlayed * minScaler * 10) / 10;
-      const statScaler  = projMinutes / (p.minutesPlayed || 1);
+  const players: PlayerProjection[] = baseline.map((p): PlayerProjection => {
+    const projMinutes = Math.round(p.minutesPlayed * minScaler * 10) / 10;
+    const statScaler  = projMinutes / (p.minutesPlayed || 1);
 
-      const projPoints    = Math.round(p.points          * statScaler * 10) / 10;
-      const projRebounds  = Math.round(p.totalRebounds   * statScaler * 10) / 10;
-      const projAssists   = Math.round(p.assists         * statScaler * 10) / 10;
-      const projTurnovers = Math.round(p.turnovers       * statScaler * 10) / 10;
-      const projSteals    = Math.round(p.steals          * statScaler * 10) / 10;
-      const projBlocks    = Math.round(p.blockedShots    * statScaler * 10) / 10;
-      const proj3PM       = Math.round(p.threePointsMade * statScaler * 10) / 10;
+    const projPoints    = Math.round(p.points          * statScaler * 10) / 10;
+    const projRebounds  = Math.round(p.totalRebounds   * statScaler * 10) / 10;
+    const projAssists   = Math.round(p.assists         * statScaler * 10) / 10;
+    const projTurnovers = Math.round(p.turnovers       * statScaler * 10) / 10;
+    const projSteals    = Math.round(p.steals          * statScaler * 10) / 10;
+    const projBlocks    = Math.round(p.blockedShots    * statScaler * 10) / 10;
+    const proj3PM       = Math.round(p.threePointsMade * statScaler * 10) / 10;
 
-      const projDk = computeDkPoints(
-        projPoints,
-        proj3PM,
-        projRebounds,
-        projAssists,
-        projSteals,
-        projBlocks,
-        projTurnovers
-      );
+    const projDk = computeDkPoints(
+      projPoints,
+      proj3PM,
+      projRebounds,
+      projAssists,
+      projSteals,
+      projBlocks,
+      projTurnovers
+    );
 
-      return {
-        player_id:           String(p.id),
-        player_name:         `${p.firstName} ${p.lastName}`,
-        position:            p.position,
-        team_id:             teamRef.id,
-        game_id:             game.game_id,
-        projection_status:   "projected",
-        projected_minutes:   projMinutes,
-        projected_points:    projPoints,
-        projected_rebounds:  projRebounds,
-        projected_assists:   projAssists,
-        projected_turnovers: projTurnovers,
-        projected_steals:    projSteals,
-        projected_blocks:    projBlocks,
-        projected_dk_points: projDk,
-        blocked_reason:      null,
-        model_version:       PLAYER_MODEL_VERSION,
-        generated_at:        generatedAt,
-      };
-    });
+    return {
+      player_id:           String(p.id),
+      player_name:         `${p.firstName} ${p.lastName}`,
+      position:            p.position,
+      team_id:             teamRef.id,
+      game_id:             game.game_id,
+      projection_status:   "projected",
+      projected_minutes:   projMinutes,
+      projected_points:    projPoints,
+      projected_rebounds:  projRebounds,
+      projected_assists:   projAssists,
+      projected_turnovers: projTurnovers,
+      projected_steals:    projSteals,
+      projected_blocks:    projBlocks,
+      projected_dk_points: projDk,
+      blocked_reason:      null,
+      model_version:       PLAYER_MODEL_VERSION,
+      generated_at:        generatedAt,
+    };
+  });
 
   // Sort descending by projected DK points
   players.sort(
@@ -221,18 +275,18 @@ function projectTeamPlayers(
 
   if (players.length === 0) {
     return blocked(
-      "all players in baseline game filtered out — none had ≥5 minutes played"
+      "all players in baseline filtered out — none met the minimum minutes threshold"
     );
   }
 
   return {
-    game_id:          game.game_id,
-    team_id:          teamRef.id,
-    team_name:        teamRef.name,
-    game_projection:  gameProjection,
+    game_id:           game.game_id,
+    team_id:           teamRef.id,
+    team_name:         teamRef.name,
+    game_projection:   gameProjection,
     players,
     projection_status: "projected",
-    blocked_reason:   null,
+    blocked_reason:    null,
   };
 }
 

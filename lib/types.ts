@@ -138,6 +138,9 @@ export interface SeasonTeamStats {
   // Source: endpoint 217 (Turnovers/Game)
   turnoversTotal: number;          // season total — used in TOV rate formula
   turnoversPerGame: number;
+
+  // Source: endpoint 145 (Scoring Offense)
+  pointsPerGame: number;           // PPG season average
 }
 
 // ---------------------------------------------------------------------------

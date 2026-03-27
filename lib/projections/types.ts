@@ -72,8 +72,8 @@ export interface FeatureSet {
 }
 
 // ---------------------------------------------------------------------------
-// PlayerProjection — projected output for one player in one game (v0.1)
-// Baseline: player's most recent completed tournament game boxscore.
+// PlayerProjection — projected output for one player in one game (v0.2)
+// Baseline: average of all completed tournament game boxscores for this player.
 // Adjustments: minutes scaler based on projected game margin (garbage time).
 // ---------------------------------------------------------------------------
 
